@@ -4,11 +4,13 @@
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { rmTestDir } from "./testing/fs.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
@@ -71,7 +73,7 @@ afterAll(async () => {
     child.on("close", () => resolve());
     setTimeout(() => (child.kill("SIGKILL"), resolve()), 5_000).unref?.();
   });
-  rmSync(home, { recursive: true, force: true });
+  await rmTestDir(home);
 });
 
 describe("harness HTTP API", () => {

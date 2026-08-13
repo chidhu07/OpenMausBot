@@ -6,22 +6,22 @@
 // session/new mcpServers → agents-proxy → /api/internal/ask-bot →
 // askBotAndWait → bus fold. The internal endpoints' auth is pinned too.
 //
-// The fake CLI is a shebang script, so the e2e half is POSIX-only (same
-// gating as acp.test.ts); the mention-resolution unit tests run everywhere.
+// Runs on every platform: the fake CLI is a shebang script, which the
+// driver's resolveCli() unwraps to `node <script>` on Windows.
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { mentionedBots } from "./store.ts";
+import { rmTestDir } from "./testing/fs.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
-const posixOnly = describe.skipIf(process.platform === "win32");
 
 describe("mentionedBots", () => {
   const peers = [
@@ -46,7 +46,7 @@ describe("mentionedBots", () => {
   });
 });
 
-posixOnly("comms e2e (fake ACP fleet)", () => {
+describe("comms e2e (fake ACP fleet)", () => {
   let child: ChildProcess;
   let home: string;
   let stderr = "";
@@ -110,7 +110,7 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
       child.on("close", () => resolve());
       setTimeout(() => (child.kill("SIGKILL"), resolve()), 5_000).unref?.();
     });
-    rmSync(home, { recursive: true, force: true });
+    await rmTestDir(home);
   });
 
   it("seals the internal comms endpoints behind the boot token", async () => {

@@ -3,9 +3,10 @@
 // stream-json protocol into canonical events, keep argv hygiene (prompt
 // over stdin, secrets stripped), and broker permission asks.
 //
-// Spawn-based tests are POSIX-only until Windows CLI spawning lands: the
-// fake CLI is a shebang script, which Windows cannot exec directly (the
-// same reason claude.cmd needs special handling — see the Windows PRs).
+// These run on every platform: the fake CLI is a shebang script, which
+// Windows cannot exec directly, so the driver's resolveCli() unwraps it
+// to `node <script>` — the same path that turns a real claude.cmd shim
+// into its JS entry.
 import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,11 +16,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR, ensureDirs } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
+import { ipcEndpoint } from "../spawn.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { ClaudeDriver } from "./claude.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
-const posixOnly = describe.skipIf(process.platform === "win32");
 
 describe("ClaudeDriver.decodeConfig", () => {
   it("defaults to the claude binary with acceptEdits", () => {
@@ -38,7 +39,7 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 });
 
-posixOnly("ClaudeDriver turns (fake CLI)", () => {
+describe("ClaudeDriver turns (fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -234,9 +235,10 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "session.started");
 
     // connect as the MCP proxy would and raise an ask (same tag rule as
-    // permissionSocketPath in claude.ts)
+    // permissionSocketPath in claude.ts — a unix socket, or a named pipe
+    // on Windows)
     const tag = "t-perm-abc".replace(/[^\w-]/g, "").slice(0, 8);
-    const socketPath = join(DATA_DIR, `perm-${tag}.sock`);
+    const socketPath = ipcEndpoint(DATA_DIR, `perm-${tag}`);
     const conn = connect(socketPath);
     const answered = new Promise<{ behavior: string }>((resolve) => {
       let buf = "";
