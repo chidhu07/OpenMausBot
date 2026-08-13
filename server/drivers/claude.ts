@@ -8,9 +8,8 @@
 //   - Composio Connect (connected apps → tools) over streamable HTTP
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
-import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -18,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { DATA_DIR } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
+import { ipcEndpoint, killTree, resolveCli, spawnCli, unlinkEndpoint } from "../spawn.ts";
 
 import type {
   DriverCreateInput,
@@ -92,7 +92,7 @@ function askSummary(ask: Ask): string {
 
 function permissionSocketPath(threadId: string) {
   const tag = threadId.replace(/[^\w-]/g, "").slice(0, 8);
-  return join(DATA_DIR, `perm-${tag}.sock`);
+  return ipcEndpoint(DATA_DIR, `perm-${tag}`);
 }
 
 function createPermissionBroker(opts: {
@@ -103,9 +103,7 @@ function createPermissionBroker(opts: {
 }) {
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   const pending = new Map<string, { ask: Ask; finish: (behavior: string, message: string | undefined, source: string) => void }>();
-  try {
-    unlinkSync(opts.socketPath);
-  } catch {}
+  unlinkEndpoint(opts.socketPath);
   const server = createNetServer((conn) => {
     conn.on("error", () => {});
     let buf = "";
@@ -165,9 +163,7 @@ function createPermissionBroker(opts: {
       try {
         server.close();
       } catch {}
-      try {
-        unlinkSync(opts.socketPath);
-      } catch {}
+      unlinkEndpoint(opts.socketPath);
     },
   };
 }
@@ -322,12 +318,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       delete env.CLAUDECODE;
       delete env.CLAUDE_CODE_ENTRYPOINT;
 
-      const child = spawn(config.cli, args, {
-        cwd: turn.cwd ?? homedir(),
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        detached: true, // own process group: killing -pid reaps child MCP servers
-      });
+      // detached on POSIX (own process group, so killTree reaps child MCP
+      // servers); on Windows spawnCli resolves the .cmd shim to its JS
+      // entry and killTree walks the tree with taskkill instead
+      const child = spawnCli(config.cli, args, { cwd: turn.cwd ?? homedir(), env });
 
       let settled = false;
       const settle = (ok: boolean, stopReason: string | null, cost: number | null = null) => {
@@ -446,15 +440,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
       });
 
-      const stop = () => {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          try {
-            child.kill("SIGTERM");
-          } catch {}
-        }
-      };
+      const stop = () => killTree(child);
       active.set(threadId, { stop, turnId, broker });
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
@@ -468,9 +454,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
+      const cli = resolveCli(config.cli);
       const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) =>
-          resolve(err ? null : stdout.trim()),
+        execFile(
+          cli.command,
+          [...cli.args, "--version"],
+          { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } },
+          (err, stdout) => resolve(err ? null : stdout.trim()),
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
@@ -509,9 +499,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       },
       generateText: (prompt: string) =>
         new Promise((resolve, reject) => {
+          const cli = resolveCli(config.cli);
           execFile(
-            config.cli,
-            ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"],
+            cli.command,
+            [...cli.args, "-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"],
             { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } },
             (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
           );
